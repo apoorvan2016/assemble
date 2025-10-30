@@ -2,8 +2,9 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
 import logging
-from database import Session, User, Project, HackathonPost
+from database import Session, User, Project, HackathonPost, ResearchPaper, Report
 from functools import wraps
+from sqlalchemy import func
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/api/admin')
 logger = logging.getLogger(__name__)
@@ -212,6 +213,14 @@ def get_stats():
         active_projects = session.query(Project).filter_by(is_active=True).count()
         total_hackathons = session.query(HackathonPost).count()
         active_hackathons = session.query(HackathonPost).filter_by(is_active=True).count()
+        total_papers = session.query(ResearchPaper).count()
+        active_papers = session.query(ResearchPaper).filter_by(is_active=True).count()
+        total_reports = session.query(Report).count()
+        pending_reports = session.query(Report).filter_by(status='pending').count()
+
+        project_reports = session.query(Report).filter_by(report_type='project').count()
+        hackathon_reports = session.query(Report).filter_by(report_type='hackathon').count()
+        paper_reports = session.query(Report).filter_by(report_type='research_paper').count()
 
         return jsonify({
             "users": {
@@ -220,16 +229,166 @@ def get_stats():
             },
             "projects": {
                 "total": total_projects,
-                "active": active_projects
+                "active": active_projects,
+                "reports": project_reports
             },
             "hackathons": {
                 "total": total_hackathons,
-                "active": active_hackathons
+                "active": active_hackathons,
+                "reports": hackathon_reports
+            },
+            "research_papers": {
+                "total": total_papers,
+                "active": active_papers,
+                "reports": paper_reports
+            },
+            "reports": {
+                "total": total_reports,
+                "pending": pending_reports
             }
         }), 200
 
     except Exception as e:
         logger.error(f"Failed to fetch stats: {str(e)}")
         return jsonify({"error": "Failed to fetch stats"}), 500
+    finally:
+        session.close()
+
+@admin_bp.route('/research-papers', methods=['GET'])
+@admin_required
+def get_all_research_papers():
+    session = Session()
+    try:
+        papers = session.query(ResearchPaper).order_by(ResearchPaper.created_at.desc()).all()
+
+        papers_data = []
+        for paper in papers:
+            report_count = session.query(Report).filter_by(
+                report_type='research_paper',
+                target_id=paper.id
+            ).count()
+
+            papers_data.append({
+                "id": paper.id,
+                "title": paper.title,
+                "abstract": paper.abstract[:200] + '...' if len(paper.abstract) > 200 else paper.abstract,
+                "authors": paper.authors,
+                "category": paper.category,
+                "status": paper.status,
+                "is_active": paper.is_active,
+                "owner": {
+                    "id": paper.owner.id,
+                    "username": paper.owner.username,
+                    "email": paper.owner.email
+                },
+                "created_at": paper.created_at.isoformat(),
+                "report_count": report_count
+            })
+
+        return jsonify(papers_data), 200
+
+    except Exception as e:
+        logger.error(f"Failed to fetch all research papers: {str(e)}")
+        return jsonify({"error": "Failed to fetch research papers"}), 500
+    finally:
+        session.close()
+
+@admin_bp.route('/research-papers/<int:paper_id>', methods=['DELETE'])
+@admin_required
+def delete_research_paper(paper_id):
+    session = Session()
+    try:
+        paper = session.query(ResearchPaper).filter_by(id=paper_id).first()
+
+        if not paper:
+            return jsonify({"error": "Research paper not found"}), 404
+
+        paper_title = paper.title
+        owner_username = paper.owner.username
+
+        session.delete(paper)
+        session.commit()
+
+        logger.info(f"Admin deleted research paper: {paper_title} (ID: {paper_id}) by {owner_username}")
+        return jsonify({"message": "Research paper deleted successfully"}), 200
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Failed to delete research paper: {str(e)}")
+        return jsonify({"error": "Failed to delete research paper"}), 500
+    finally:
+        session.close()
+
+@admin_bp.route('/reports', methods=['GET'])
+@admin_required
+def get_all_reports():
+    session = Session()
+    try:
+        reports = session.query(Report).order_by(Report.created_at.desc()).all()
+
+        reports_data = []
+        for report in reports:
+            target_info = {}
+            if report.report_type == 'project':
+                target = session.query(Project).filter_by(id=report.target_id).first()
+                if target:
+                    target_info = {"name": target.name, "owner": target.owner.username}
+            elif report.report_type == 'hackathon':
+                target = session.query(HackathonPost).filter_by(id=report.target_id).first()
+                if target:
+                    target_info = {"name": target.title, "owner": target.owner.username}
+            elif report.report_type == 'research_paper':
+                target = session.query(ResearchPaper).filter_by(id=report.target_id).first()
+                if target:
+                    target_info = {"name": target.title, "owner": target.owner.username}
+
+            reports_data.append({
+                "id": report.id,
+                "report_type": report.report_type,
+                "target_id": report.target_id,
+                "target_info": target_info,
+                "reason": report.reason,
+                "status": report.status,
+                "reporter": {
+                    "id": report.reporter.id,
+                    "username": report.reporter.username
+                },
+                "created_at": report.created_at.isoformat()
+            })
+
+        return jsonify(reports_data), 200
+
+    except Exception as e:
+        logger.error(f"Failed to fetch reports: {str(e)}")
+        return jsonify({"error": "Failed to fetch reports"}), 500
+    finally:
+        session.close()
+
+@admin_bp.route('/reports/<int:report_id>/status', methods=['PUT'])
+@admin_required
+def update_report_status(report_id):
+    session = Session()
+    try:
+        report = session.query(Report).filter_by(id=report_id).first()
+
+        if not report:
+            return jsonify({"error": "Report not found"}), 404
+
+        data = request.get_json()
+        new_status = data.get('status')
+
+        if new_status not in ['pending', 'reviewed', 'resolved']:
+            return jsonify({"error": "Invalid status"}), 400
+
+        report.status = new_status
+        session.commit()
+
+        logger.info(f"Admin updated report {report_id} status to {new_status}")
+        return jsonify({"message": "Report status updated successfully"}), 200
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Failed to update report status: {str(e)}")
+        return jsonify({"error": "Failed to update report status"}), 500
     finally:
         session.close()

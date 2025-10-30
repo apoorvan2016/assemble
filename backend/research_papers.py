@@ -3,7 +3,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime
 import pytz
 import logging
-from database import Session, User, ResearchPaper
+from database import Session, User, ResearchPaper, Report
 
 research_bp = Blueprint('research', __name__, url_prefix='/api/research')
 logger = logging.getLogger(__name__)
@@ -327,5 +327,59 @@ def get_my_papers():
     except Exception as e:
         logger.error(f"Failed to fetch user's research papers: {type(e).__name__}: {str(e)}")
         return jsonify({"error": "Failed to fetch research papers"}), 500
+    finally:
+        session.close()
+
+@research_bp.route('/papers/<int:paper_id>/report', methods=['POST'])
+@jwt_required()
+def report_paper(paper_id):
+    session = Session()
+    try:
+        current_user_id = get_jwt_identity()
+        user = session.query(User).filter_by(username=current_user_id).first()
+
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        paper = session.query(ResearchPaper).filter_by(id=paper_id).first()
+        if not paper:
+            return jsonify({"error": "Research paper not found"}), 404
+
+        if paper.owner_id == user.id:
+            return jsonify({"error": "You cannot report your own research paper"}), 400
+
+        existing_report = session.query(Report).filter_by(
+            reporter_id=user.id,
+            report_type='research_paper',
+            target_id=paper_id
+        ).first()
+
+        if existing_report:
+            return jsonify({"error": "You have already reported this research paper"}), 400
+
+        data = request.get_json()
+        reason = data.get('reason', '').strip()
+
+        if not reason:
+            return jsonify({"error": "Reason is required"}), 400
+
+        report = Report(
+            reporter_id=user.id,
+            report_type='research_paper',
+            target_id=paper_id,
+            reason=reason
+        )
+
+        session.add(report)
+        session.commit()
+
+        logger.info(f"Research paper reported: {paper.title} by user {user.username}")
+
+        return jsonify({"message": "Research paper reported successfully"}), 201
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Failed to report research paper: {type(e).__name__}: {str(e)}")
+        return jsonify({"error": "Failed to report research paper"}), 500
     finally:
         session.close()

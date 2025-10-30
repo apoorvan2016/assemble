@@ -145,6 +145,7 @@ class Project(Base):
     applications = relationship('ProjectApplication', back_populates='project', cascade='all, delete-orphan')
     bookmarked_by = relationship('User', secondary=user_bookmarks, back_populates='bookmarked_projects')
     milestones = relationship('ProjectMilestone', back_populates='project', cascade='all, delete-orphan')
+    reports = relationship('Report', foreign_keys='Report.target_id', primaryjoin='and_(Project.id==Report.target_id, Report.report_type=="project")', viewonly=True)
 
 class Skill(Base):
     __tablename__ = 'skills'
@@ -220,6 +221,7 @@ class HackathonPost(Base):
     skills = relationship('Skill', secondary=hackathon_skills, back_populates='hackathons')
     roles = relationship('Role', secondary=hackathon_roles, back_populates='hackathons')
     applications = relationship('HackathonApplication', back_populates='hackathon', cascade='all, delete-orphan')
+    reports = relationship('Report', foreign_keys='Report.target_id', primaryjoin='and_(HackathonPost.id==Report.target_id, Report.report_type=="hackathon")', viewonly=True)
 
 class HackathonApplication(Base):
     __tablename__ = 'hackathon_applications'
@@ -429,6 +431,24 @@ class ResearchPaper(Base):
 
     # Relationships
     owner = relationship('User')
+    reports = relationship('Report', back_populates='research_paper', cascade='all, delete-orphan')
+
+class Report(Base):
+    __tablename__ = 'reports'
+
+    id = Column(Integer, primary_key=True)
+    reporter_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    report_type = Column(String(20), nullable=False)
+    target_id = Column(Integer, nullable=False)
+    reason = Column(Text, nullable=False)
+    status = Column(String(20), default='pending')
+    created_at = Column(DateTime, default=lambda: datetime.now(IST))
+
+    # Relationships
+    reporter = relationship('User')
+    project = relationship('Project', foreign_keys=[target_id], primaryjoin='and_(Report.target_id==Project.id, Report.report_type=="project")', viewonly=True)
+    hackathon = relationship('HackathonPost', foreign_keys=[target_id], primaryjoin='and_(Report.target_id==HackathonPost.id, Report.report_type=="hackathon")', viewonly=True)
+    research_paper = relationship('ResearchPaper', foreign_keys=[target_id], primaryjoin='and_(Report.target_id==ResearchPaper.id, Report.report_type=="research_paper")', back_populates='reports', viewonly=True)
 
 if __name__ == '__main__':
     try:

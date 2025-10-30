@@ -2,7 +2,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime, timezone
 import pytz
-from database import Session, User, Project, Skill, Role, ProjectApplication, Notification, ActivityLog, ProjectMilestone
+from database import Session, User, Project, Skill, Role, ProjectApplication, Notification, ActivityLog, ProjectMilestone, Report
 import logging
 
 projects_bp = Blueprint('projects', __name__, url_prefix='/api/projects')
@@ -715,5 +715,59 @@ def delete_project(project_id):
         session.rollback()
         logger.error(f"Failed to delete project: {str(e)}")
         return jsonify({"error": "Failed to delete project"}), 500
+    finally:
+        session.close()
+
+@projects_bp.route('/<int:project_id>/report', methods=['POST'])
+@jwt_required()
+def report_project(project_id):
+    session = Session()
+    try:
+        current_user_id = get_jwt_identity()
+        user = session.query(User).filter_by(username=current_user_id).first()
+
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        project = session.query(Project).filter_by(id=project_id).first()
+        if not project:
+            return jsonify({"error": "Project not found"}), 404
+
+        if project.owner_id == user.id:
+            return jsonify({"error": "You cannot report your own project"}), 400
+
+        existing_report = session.query(Report).filter_by(
+            reporter_id=user.id,
+            report_type='project',
+            target_id=project_id
+        ).first()
+
+        if existing_report:
+            return jsonify({"error": "You have already reported this project"}), 400
+
+        data = request.get_json()
+        reason = data.get('reason', '').strip()
+
+        if not reason:
+            return jsonify({"error": "Reason is required"}), 400
+
+        report = Report(
+            reporter_id=user.id,
+            report_type='project',
+            target_id=project_id,
+            reason=reason
+        )
+
+        session.add(report)
+        session.commit()
+
+        logger.info(f"Project reported: {project.name} by user {user.username}")
+
+        return jsonify({"message": "Project reported successfully"}), 201
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Failed to report project: {str(e)}")
+        return jsonify({"error": "Failed to report project"}), 500
     finally:
         session.close()

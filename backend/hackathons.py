@@ -2,9 +2,11 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from datetime import datetime, timezone
 import pytz
-from database import Session, User, HackathonPost, HackathonApplication, Skill, Role, Notification, ActivityLog
+from database import Session, User, HackathonPost, HackathonApplication, Skill, Role, Notification, ActivityLog, Report
+import logging
 
 hackathon_bp = Blueprint('hackathons', __name__, url_prefix='/api/hackathons')
+logger = logging.getLogger(__name__)
 
 # Set Indian timezone
 IST = pytz.timezone('Asia/Kolkata')
@@ -583,5 +585,59 @@ def get_my_hackathon_applications():
         
     except Exception as e:
         return jsonify({"error": "Failed to fetch your hackathon applications"}), 500
+    finally:
+        session.close()
+
+@hackathon_bp.route('/<int:hackathon_id>/report', methods=['POST'])
+@jwt_required()
+def report_hackathon(hackathon_id):
+    session = Session()
+    try:
+        current_user_id = get_jwt_identity()
+        user = session.query(User).filter_by(username=current_user_id).first()
+
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+
+        hackathon = session.query(HackathonPost).filter_by(id=hackathon_id).first()
+        if not hackathon:
+            return jsonify({"error": "Hackathon not found"}), 404
+
+        if hackathon.owner_id == user.id:
+            return jsonify({"error": "You cannot report your own hackathon post"}), 400
+
+        existing_report = session.query(Report).filter_by(
+            reporter_id=user.id,
+            report_type='hackathon',
+            target_id=hackathon_id
+        ).first()
+
+        if existing_report:
+            return jsonify({"error": "You have already reported this hackathon"}), 400
+
+        data = request.get_json()
+        reason = data.get('reason', '').strip()
+
+        if not reason:
+            return jsonify({"error": "Reason is required"}), 400
+
+        report = Report(
+            reporter_id=user.id,
+            report_type='hackathon',
+            target_id=hackathon_id,
+            reason=reason
+        )
+
+        session.add(report)
+        session.commit()
+
+        logger.info(f"Hackathon reported: {hackathon.title} by user {user.username}")
+
+        return jsonify({"message": "Hackathon reported successfully"}), 201
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Failed to report hackathon: {str(e)}")
+        return jsonify({"error": "Failed to report hackathon"}), 500
     finally:
         session.close()
